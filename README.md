@@ -2,6 +2,10 @@
 Shaders and VFX experimentation in URP and BIRP.\
 Made in Unity 2022.2 for latest features.
 
+### Auto PBR surface shader
+https://user-images.githubusercontent.com/29812914/214056627-49690baa-6e92-45e8-a060-9429a12346c1.mp4
+
+
 ### Shadow map blur
 Directly inside surface shader, uses simple spiral blur (noise-based sampling) and takes light depth-map (lower-res mip) as distance.\
 Noisy and glitchy, could use a better blurring algorithm for both depth map and shadows.
