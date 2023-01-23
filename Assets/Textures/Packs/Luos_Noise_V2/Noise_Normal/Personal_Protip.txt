@@ -1,0 +1,12 @@
+These are great for uv-distortion!
+
+
+1. Use a "Panner" to pan the texture
+2. "ComponentMask" the main output with only channel R and G enabled.
+3. Then just "multiply" it with a low value.
+4. "Add" them to a "texturecoordinate" node.
+5. Then plug it into a texture.
+6. ???
+7. Profit
+
+enjoy!

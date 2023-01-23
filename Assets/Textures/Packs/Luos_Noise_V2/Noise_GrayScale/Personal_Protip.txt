@@ -1,0 +1,4 @@
+Luos's personal pro-tip!
+
+in ue4 set the compression as Alpha, which results in a crisper grayscale.
+This way you can also reduce the resolution of the texture yet keep it nice and crisp.
