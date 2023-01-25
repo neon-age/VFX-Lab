@@ -1,3 +1,4 @@
+
 Shader "Surface/Auto-PBR"
 {
     Properties
@@ -16,11 +17,14 @@ Shader "Surface/Auto-PBR"
         _BumpScale ("Normal Map Scale", Float) = 1
 
         _Cutoff ("_Cutoff", Range(0, 1)) = 0.5
+        _LightWrap ("_LightWrap", Float) = 0.5
         _Glossiness ("Smoothness", Float) = 0.5
+        _GlossinessLimit ("_GlossinessLimit", Range(0, 1)) = 1
         _Metallic ("Metallic", Range(0,1)) = 0.0
         _Occlusion ("Occlusion", Float) = 1
         _Parallax ("Parallax", Float) = 1
-        _ParallaxParams ("Parallax Adjust (Offset, Multiply, Mip Bias)", Float) = (0, 1, 0, 0)
+        _ParallaxParams ("Parallax Adjust (Multiply, Offset, Mip Bias)", Float) = (1, 0, 0, 0)
+        _ParallaxEdgeDiscard ("_ParallaxEdgeDiscard", Range(0, 1)) = 0
         
         _ParallaxSamples ("Parallax Samples Factor", Float) = 0.0
     }
@@ -31,7 +35,7 @@ Shader "Surface/Auto-PBR"
         //Cull Off
 
         CGPROGRAM
-        #pragma surface surf CustomStandard vertex:vert fullforwardshadows
+        #pragma surface surf CustomStandard vertex:vert fullforwardshadows alphatest:_Cutoff
         #include "UnityPBSLighting.cginc"
         #include "AutoLight.cginc"
 
@@ -55,14 +59,17 @@ Shader "Surface/Auto-PBR"
 
         half4 _BumpFromAlbedoParams;
         half _BumpFromAlbedoDirection;
-        half _Cutoff;
+       // half _Cutoff;
         half _Glossiness;
+        half _GlossinessLimit;
         half _Metallic;
         half _BumpScale;
         int _BumpFromAlbedoQuality;
         int _UseNormalMap;
         half _Occlusion;
         half _Parallax;
+        half _LightWrap;
+        half _ParallaxEdgeDiscard;
         half4 _ParallaxParams;
         int _ParallaxSamples;
         fixed4 _Color;
@@ -72,14 +79,167 @@ Shader "Surface/Auto-PBR"
           return (value - from) / (to - from);
         }
 
+        // https://github.com/TwoTailsGames/Unity-Built-in-Shaders/blob/master/CGIncludes/UnityStandardBRDF.cginc
+        half4 BRDF_Unity_PBS (half3 diffColor, half3 specColor, half oneMinusReflectivity, half smoothness,
+            float3 normal, float3 viewDir,
+            UnityLight light, UnityIndirect gi)
+        {
+            /*
+            float3 reflDir = reflect (viewDir, normal);
+        
+            half nl = saturate(dot(normal, light.dir));
+            half nv = saturate(dot(normal, viewDir));
+            half lightAtten = (nl * _LightWrap + (1 - _LightWrap));
+        
+            // Vectorize Pow4 to save instructions
+            half2 rlPow4AndFresnelTerm = Pow4 (float2(dot(reflDir, light.dir), 1-nv));  // use R.L instead of N.H to save couple of instructions
+            half rlPow4 = rlPow4AndFresnelTerm.x; // power exponent must match kHorizontalWarpExp in NHxRoughness() function in GeneratedTextures.cpp
+            half fresnelTerm = rlPow4AndFresnelTerm.y;
+        
+            half grazingTerm = saturate(smoothness + (1-oneMinusReflectivity));
+        
+            half3 color = BRDF3_Direct(diffColor, specColor, rlPow4, smoothness);
+            color *= light.color * lightAtten;
+            color += BRDF3_Indirect(diffColor, specColor, gi, grazingTerm, fresnelTerm);
+        
+            return half4(color, 1);*/
+            float perceptualRoughness = SmoothnessToPerceptualRoughness (smoothness);
+            float3 halfDir = Unity_SafeNormalize (float3(light.dir) + viewDir);
+        
+        // NdotV should not be negative for visible pixels, but it can happen due to perspective projection and normal mapping
+        // In this case normal should be modified to become valid (i.e facing camera) and not cause weird artifacts.
+        // but this operation adds few ALU and users may not want it. Alternative is to simply take the abs of NdotV (less correct but works too).
+        // Following define allow to control this. Set it to 0 if ALU is critical on your platform.
+        // This correction is interesting for GGX with SmithJoint visibility function because artifacts are more visible in this case due to highlight edge of rough surface
+        // Edit: Disable this code by default for now as it is not compatible with two sided lighting used in SpeedTree.
+        #define UNITY_HANDLE_CORRECTLY_NEGATIVE_NDOTV 0
+        
+        #if UNITY_HANDLE_CORRECTLY_NEGATIVE_NDOTV
+            // The amount we shift the normal toward the view vector is defined by the dot product.
+            half shiftAmount = dot(normal, viewDir);
+            normal = shiftAmount < 0.0f ? normal + viewDir * (-shiftAmount + 1e-5f) : normal;
+            // A re-normalization should be applied here but as the shift is small we don't do it to save ALU.
+            //normal = normalize(normal);
+        
+            float nv = saturate(dot(normal, viewDir)); // TODO: this saturate should no be necessary here
+        #else
+            half nv = abs(dot(normal, viewDir));    // This abs allow to limit artifact
+        #endif
+        
+            float nl = saturate(dot(normal, light.dir));
+            float nh = saturate(dot(normal, halfDir));
+            nl = (nl * _LightWrap + (1 - _LightWrap));
+        
+            half lv = saturate(dot(light.dir, viewDir));
+            half lh = saturate(dot(light.dir, halfDir));
+        
+            // Diffuse term
+            half diffuseTerm = DisneyDiffuse(nv, nl, lh, perceptualRoughness) * nl;
+        
+            // Specular term
+            // HACK: theoretically we should divide diffuseTerm by Pi and not multiply specularTerm!
+            // BUT 1) that will make shader look significantly darker than Legacy ones
+            // and 2) on engine side "Non-important" lights have to be divided by Pi too in cases when they are injected into ambient SH
+            float roughness = PerceptualRoughnessToRoughness(perceptualRoughness);
+        #if UNITY_BRDF_GGX
+            // GGX with roughtness to 0 would mean no specular at all, using max(roughness, 0.002) here to match HDrenderloop roughtness remapping.
+            roughness = max(roughness, 0.002);
+            float V = SmithJointGGXVisibilityTerm (nl, nv, roughness);
+            float D = GGXTerm (nh, roughness);
+        #else
+            // Legacy
+            half V = SmithBeckmannVisibilityTerm (nl, nv, roughness);
+            half D = NDFBlinnPhongNormalizedTerm (nh, PerceptualRoughnessToSpecPower(perceptualRoughness));
+        #endif
+        
+            float specularTerm = V*D * UNITY_PI; // Torrance-Sparrow model, Fresnel is applied later
+        
+        #   ifdef UNITY_COLORSPACE_GAMMA
+                specularTerm = sqrt(max(1e-4h, specularTerm));
+        #   endif
+        
+            // specularTerm * nl can be NaN on Metal in some cases, use max() to make sure it's a sane value
+            specularTerm = max(0, specularTerm * nl);
+        #if defined(_SPECULARHIGHLIGHTS_OFF)
+            specularTerm = 0.0;
+        #endif
+        
+            // surfaceReduction = Int D(NdotH) * NdotH * Id(NdotL>0) dH = 1/(roughness^2+1)
+            half surfaceReduction;
+        #   ifdef UNITY_COLORSPACE_GAMMA
+                surfaceReduction = 1.0-0.28*roughness*perceptualRoughness;      // 1-0.28*x^3 as approximation for (1/(x^4+1))^(1/2.2) on the domain [0;1]
+        #   else
+                surfaceReduction = 1.0 / (roughness*roughness + 1.0);           // fade \in [0.5;1]
+        #   endif
+        
+            // To provide true Lambert lighting, we need to be able to kill specular completely.
+            specularTerm *= any(specColor) ? 1.0 : 0.0;
+        
+            half grazingTerm = saturate(smoothness + (1-oneMinusReflectivity));
+            half3 color =   diffColor * (gi.diffuse + light.color * diffuseTerm)
+                            + specularTerm * light.color * FresnelTerm (specColor, lh)
+                            + surfaceReduction * gi.specular * FresnelLerp (specColor, grazingTerm, nv);
+        
+            return half4(color, 1);
+        }
+
         inline half4 LightingCustomStandard(SurfaceOutputStandard s, half3 viewDir, UnityGI gi)
         {
-            half4 pbr = LightingStandard(s, viewDir, gi);
-            return pbr;
+            //return LightingStandard(s, viewDir, gi);
+            
+            // https://github.com/TwoTailsGames/Unity-Built-in-Shaders/blob/master/CGIncludes/UnityPBSLighting.cginc
+            s.Normal = normalize(s.Normal);
+
+            half oneMinusReflectivity;
+            half3 specColor;
+            s.Albedo = DiffuseAndSpecularFromMetallic (s.Albedo, s.Metallic, specColor, oneMinusReflectivity);
+
+            // shader relies on pre-multiply alpha-blend (_SrcBlend = One, _DstBlend = OneMinusSrcAlpha)
+            // this is necessary to handle transparency in physically correct way - only diffuse component gets affected by alpha
+            half outputAlpha;
+            s.Albedo = PreMultiplyAlpha (s.Albedo, s.Alpha, oneMinusReflectivity, outputAlpha);
+
+            half4 c = BRDF_Unity_PBS (s.Albedo, specColor, oneMinusReflectivity, s.Smoothness, s.Normal, viewDir, gi.light, gi.indirect);
+            c.a = s.Alpha;
+            return half4(c.rgb, 0);
         }
         inline void LightingCustomStandard_GI(SurfaceOutputStandard s, UnityGIInput data, inout UnityGI gi)
         {
-            LightingStandard_GI(s, data, gi);
+             LightingStandard_GI(s, data, gi);
+             /*
+            half occlusion = s.Occlusion;
+            half normalWorld = s.Normal;
+            UnityGI o_gi;
+            ResetUnityGI(o_gi);
+
+            #if defined(HANDLE_SHADOWS_BLENDING_IN_GI)
+                half bakedAtten = UnitySampleBakedOcclusion(data.lightmapUV.xy, data.worldPos);
+                float zDist = dot(_WorldSpaceCameraPos - data.worldPos, UNITY_MATRIX_V[2].xyz);
+                float fadeDist = UnityComputeShadowFadeDistance(data.worldPos, zDist);
+                data.atten = UnityMixRealtimeAndBakedShadows(data.atten, bakedAtten, UnityComputeShadowFade(fadeDist));
+            #endif
+
+            o_gi.light = data.light;
+            o_gi.light.color *= data.atten;
+
+            #if UNITY_SHOULD_SAMPLE_SH
+                o_gi.indirect.diffuse = ShadeSHPerPixel(normalWorld, data.ambient, data.worldPos);
+            #endif
+
+            #ifdef DYNAMICLIGHTMAP_ON
+                fixed4 realtimeColorTex = UNITY_SAMPLE_TEX2D(unity_DynamicLightmap, data.lightmapUV.zw);
+                half3 realtimeColor = DecodeRealtimeLightmap (realtimeColorTex);
+
+                #ifdef DIRLIGHTMAP_COMBINED
+                    half4 realtimeDirTex = UNITY_SAMPLE_TEX2D_SAMPLER(unity_DynamicDirectionality, unity_DynamicLightmap, data.lightmapUV.zw);
+                    o_gi.indirect.diffuse += DecodeDirectionalLightmap (realtimeColor, realtimeDirTex, normalWorld);
+                #else
+                    o_gi.indirect.diffuse += realtimeColor;
+                #endif
+            #endif
+
+            o_gi.indirect.diffuse *= occlusion;
+            gi = o_gi;*/
         }
 
         half4 currSplatmap;
@@ -100,18 +260,34 @@ Shader "Surface/Auto-PBR"
 
             half4 lod = tex2Dlod(_MainTex, float4(texcoord, mipBias, mipBias));
             half c = BlendChannels(lod, currSplatmap);
-            return c * params.x + params.y;
+
+            half invert = lerp(1 - c, c, normalize(_Parallax) / 2 + 0.5);
+
+            half h = clamp(invert * abs(params.x) + abs(params.y), 0, 0.999);
+            return abs(h);
+            //return c * params.x + params.y;
         }
 
         #include<POM.cginc>
 
-		void vert(inout appdata_full IN, out Input OUT)
+		void vert(inout appdata_full v, out Input OUT)
 		{
             UNITY_INITIALIZE_OUTPUT(Input, OUT);
             float3 eye;
             float sampleRatio;
-            parallax_vert( IN.vertex, IN.normal, IN.tangent, eye, sampleRatio );
-            OUT.parallaxEye = float4(eye, sampleRatio);
+
+            // https://github.com/candycat1992/Unity_Shaders_Book/blob/master/Assets/Shaders/Chapter7/Chapter7-NormalMapTangentSpace.shader
+            // Construct a matrix that transforms a point/vector from tangent space to world space
+			fixed3 worldNormal = UnityObjectToWorldNormal(v.normal);  
+			fixed3 worldTangent = UnityObjectToWorldDir(v.tangent.xyz);  
+			fixed3 worldBinormal = cross(worldNormal, worldTangent) * v.tangent.w; 
+
+			//wToT = the inverse of tToW = the transpose of tToW as long as tToW is an orthogonal matrix.
+			float3x3 worldToTangent = float3x3(worldTangent, worldBinormal, worldNormal);
+
+			// Transform the light and view dir from world space to tangent space
+			//o.lightDir = mul(worldToTangent, WorldSpaceLightDir(v.vertex));
+			OUT.parallaxEye = float4(mul(worldToTangent, WorldSpaceViewDir(v.vertex)), 1);
 		}
 
         float luminance(float3 c)
@@ -167,13 +343,24 @@ Shader "Surface/Auto-PBR"
             //currSplatmap = splatmap;
             currSplatmap = 1;
 
-            
+            float2 offset = 0;
             half sampledHeight = 0;
-            float2 offset = parallax_offset (_Parallax / 100, IN.parallaxEye.xyz, IN.parallaxEye.w, uv, 
-			    _MainTex, 1, _ParallaxSamples, sampledHeight);
+            if (_Parallax != 0)
+            {
+                offset = parallax_offset (abs(_Parallax) / 100, IN.parallaxEye.xyz, IN.parallaxEye.w, uv, 
+			        _MainTex, 1, _ParallaxSamples, sampledHeight);
+
+                half flip = normalize(_Parallax) / 2 + 0.5;
+
+                float2 discardUV = abs(offset);
+
+                if(_ParallaxEdgeDiscard > 0 && (abs(discardUV.x) > (1 - _ParallaxEdgeDiscard) || abs(discardUV.y) > (1 - _ParallaxEdgeDiscard)) ) 
+				    discard;
+
+                //sampledHeight = lerp(1 - sampledHeight, sampledHeight, flip);
+            }
 
             uv += offset;
-
             half4 c = tex2D (_MainTex, uv);
 
 /*
@@ -310,11 +497,13 @@ Shader "Surface/Auto-PBR"
             //albedo += ColorMask(c.g, splatmap.g, 1, 0.5);
             //albedo += ColorMask(c.b, splatmap.b, 1, 0.5);
 
-            sampledHeight = _Parallax > 0 ? sampledHeight : 1 - sampledHeight;
+            //sampledHeight = _Parallax > 0 ? sampledHeight : 1 - sampledHeight;
 
             half4 color = tex2D(_ColorRamp, float2(clamp(albedo, 0.02, 0.98), 0));
-            if (color.a < _Cutoff)
-                discard;
+
+            o.Alpha = color.a;
+            //if (color.a < _Cutoff)
+            //    discard;
             
             half albedoOcclusion = lerp(1, sampledHeight, _Occlusion / 2);
 
@@ -322,10 +511,10 @@ Shader "Surface/Auto-PBR"
             o.Occlusion = lerp(1, sampledHeight, _Occlusion);
             o.Metallic = _Metallic;
             
-            o.Smoothness = saturate(_Glossiness);
-            o.Smoothness = saturate(albedo * _Glossiness * albedoOcclusion);
+            //o.Smoothness = saturate(_Glossiness);
+            o.Smoothness = clamp(albedo * _Glossiness * albedoOcclusion, 0, _GlossinessLimit);
             
-            o.Alpha = c.a;
+           
         }
         ENDCG
     }

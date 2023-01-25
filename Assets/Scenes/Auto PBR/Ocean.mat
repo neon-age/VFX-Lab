@@ -87,12 +87,14 @@ Material:
     - _GlossMapScale: 1
     - _Glossiness: 5.4
     - _GlossyReflections: 1
+    - _LightWrap: 0.5
     - _Metallic: 0
     - _Mode: 0
     - _NormalMipBias: 0.1
-    - _Occlusion: 2.01
+    - _Occlusion: 1
     - _OcclusionStrength: 1
-    - _Parallax: 15
+    - _Parallax: 10
+    - _ParallaxEdgeDiscard: 0
     - _ParallaxMipBias: 2.53
     - _ParallaxSamples: 64
     - _SmoothnessTextureChannel: 0
@@ -102,10 +104,10 @@ Material:
     - _UseNormalMap: 0
     - _ZWrite: 1
     m_Colors:
-    - _BumpFromAlbedoParams: {r: 0.4, g: 0.4, b: -4, a: 4}
+    - _BumpFromAlbedoParams: {r: 0.47, g: 0.47, b: -4, a: 4}
     - _Color: {r: 0.43736848, g: 1.435989, b: 2.2615154, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
     - _ParallaxMidPoint: {r: 4.56, g: 0.05, b: 0, a: 0}
-    - _ParallaxParams: {r: -0.62, g: 1.07, b: 3, a: 0}
+    - _ParallaxParams: {r: 1, g: 0.71, b: 3, a: 0}
     - _SplatBlend: {r: 0, g: 0, b: 0, a: 0}
   m_BuildTextureStacks: []
